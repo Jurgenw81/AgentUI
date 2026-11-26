@@ -1,0 +1,58 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html, body, #root { height: 100%; }
+html { color-scheme: light; }
+html.dark { color-scheme: dark; } /* native controls (scrollbars, scrollable textareas) follow the theme */
+body { @apply bg-zinc-50 text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100; }
+
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3.5 py-2 text-sm font-medium transition
+         disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+@layer components {
+.input {
+  @apply w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none transition
+         placeholder:text-zinc-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20
+         dark:border-zinc-700 dark:bg-zinc-900 dark:focus:border-indigo-400;
+}
+.label { @apply mb-1.5 block text-sm font-medium text-zinc-700 dark:text-zinc-300; }
+.hint { @apply mt-1 text-xs text-zinc-500 dark:text-zinc-400; }
+.card { @apply rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900; }
+
+.btn-primary { @apply btn bg-indigo-600 text-white shadow-sm hover:bg-indigo-500; }
+.btn-secondary { @apply btn border border-zinc-300 bg-white text-zinc-800 hover:bg-zinc-50
+                 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800; }
+.btn-ghost { @apply btn text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800; }
+.btn-danger { @apply btn bg-red-600 text-white hover:bg-red-500; }
+}
+
+/* React Flow theming */
+.react-flow { --xy-background-color: transparent; }
+.dark .react-flow {
+  --xy-controls-button-background-color: #18181b;
+  --xy-controls-button-background-color-hover: #27272a;
+  --xy-controls-button-color: #e4e4e7;
+  --xy-controls-button-border-color: #3f3f46;
+  --xy-edge-stroke: #52525b;
+  --xy-minimap-background-color: #18181b;
+  --xy-attribution-background-color: transparent;
+}
+.react-flow__edge-path { stroke-width: 2; }
+.react-flow__handle { width: 12px; height: 12px; border: 2px solid white; background: #6366f1; }
+.dark .react-flow__handle { border-color: #18181b; }
+
+@keyframes flow-dash { to { stroke-dashoffset: -20; } }
+.edge-running .react-flow__edge-path { stroke: #6366f1; stroke-dasharray: 6 4; animation: flow-dash 0.6s linear infinite; }
+.edge-done .react-flow__edge-path { stroke: #10b981; }
+.edge-dead .react-flow__edge-path { stroke-dasharray: 3 5; opacity: 0.4; }
+
+.caret::after { content: "▍"; animation: blink 1s steps(1) infinite; margin-left: 1px; color: #6366f1; }
+@keyframes blink { 50% { opacity: 0; } }
