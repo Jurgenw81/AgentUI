@@ -22,6 +22,7 @@ It works with your **Claude, ChatGPT and Gemini subscriptions** (no API key need
 - [Project layout](#project-layout)
 - [Security model](#security-model)
 - [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ---
 
@@ -268,3 +269,9 @@ AgentUI is a **single-user app for your own computer**:
 | Web search returns nothing | The free search engines sometimes block automated queries. AgentUI tries several in turn; try again later or rephrase. |
 | An MCP server **can't connect** | Check that its command is installed (`npx`, `uvx`, `docker`), that required environment variables or headers are filled in, or click **Log in** if shown. |
 | *"Port 3000 is already in use"* | AgentUI is probably already running. Open it, or run `PORT=4000 ./start.sh`. |
+
+---
+
+## License
+
+[MIT](LICENSE): free to use, copy, modify and distribute, including commercially. Keep the copyright notice.
