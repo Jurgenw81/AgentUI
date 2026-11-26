@@ -110,9 +110,11 @@ async def run_agent(
     depth: int = 0,
     scope: str = "",
     gate: Gate | None = None,
+    project: dict | None = None,
 ) -> dict:
     """Run an agent until it gives a final answer. Returns {output, messages}.
-    `gate` decides tool calls whose safety rule is "ask" or "ai" (see policies.py)."""
+    `gate` decides tool calls whose safety rule is "ask" or "ai" (see policies.py).
+    `project` (a run): this lead's plan is saved as a workflow, so the task shows up under Workflows."""
     model = agent.get("model") or default_model()
     enabled = [t for t in (agent.get("tools") or []) if t in tools.TOOLS]
     others = [a for a in db.list_docs("agent") if a["id"] != agent["id"]]
@@ -132,18 +134,81 @@ async def run_agent(
 
     scope_counts: dict[str, int] = {}
 
-    async def delegate(name: str, task: str) -> str:
-        target = next((a for a in others if a["name"].lower() == name.lower()), None)
+    # ---- the lead's live workflow: planned with update_plan, kept up to date as hand-offs run ----
+    plan: list[dict] = []  # [{id, agent, task, after, status: pending|running|done|failed, result}]
+    if project is not None and depth == 0:  # a follow-up keeps the project's earlier steps on the diagram
+        plan += [dict(s, after=list(s.get("after") or [])) for s in (project.get("plan_seed") or [])]
+
+    async def emit_plan() -> None:
+        wf_id = save_project_workflow(project, agent["name"], plan) if project is not None else None
+        await emit({**base, "type": "plan", "steps": [dict(s, after=list(s["after"])) for s in plan],
+                    **({"workflow_id": wf_id} if wf_id else {})})
+
+    def find_agent(name: str) -> dict | None:
+        return next((a for a in others if a["name"].lower() == (name or "").strip().lower()), None)
+
+    async def update_plan(steps: list) -> str:
+        old = {s["id"]: s for s in plan}
+        new, problems = [], []
+        for i, raw in enumerate(s for s in steps if isinstance(s, dict)):
+            sid = str(raw.get("id") or f"step{i + 1}").strip()[:40]
+            target = find_agent(raw.get("agent", ""))
+            if not target:
+                problems.append(f"step {sid!r}: no teammate named {raw.get('agent')!r}")
+                continue
+            if any(s["id"] == sid for s in new):
+                sid = f"{sid}-{i + 1}"
+            prev = old.pop(sid, None)
+            new.append({"id": sid, "agent": target["name"], "task": str(raw.get("task") or "")[:300],
+                        "after": [str(a) for a in (raw.get("after") or []) if isinstance(a, (str, int))],
+                        "status": prev["status"] if prev else "pending", "result": prev.get("result") if prev else None})
+        # work that already started can't be un-planned
+        new += [s for s in old.values() if s["status"] != "pending"]
+        ids = {s["id"] for s in new}
+        for s in new:
+            s["after"] = [a for a in s["after"] if a in ids and a != s["id"]]
+        plan[:] = new
+        await emit_plan()
+        msg = (f"Plan saved ({len(plan)} steps); the user can see it. Now delegate the steps, passing each step's id "
+               "as `step`. Run steps without dependencies on each other together with delegate_parallel.")
+        return msg + (" Skipped: " + "; ".join(problems) + "." if problems else "")
+
+    def step_for(target: dict, task: str, step_id: str | None) -> dict:
+        s = next((s for s in plan if step_id and s["id"] == step_id), None) or \
+            next((s for s in plan if s["status"] == "pending" and s["agent"] == target["name"]), None)
+        if s:
+            return s
+        # not planned: add it, after whatever had already finished (so the diagram still shows the order)
+        has_child = {a for x in plan for a in x["after"]}
+        s = {"id": f"step{len(plan) + 1}", "agent": target["name"], "task": task[:300],
+             "after": [x["id"] for x in plan if x["status"] == "done" and x["id"] not in has_child],
+             "status": "pending", "result": None}
+        plan.append(s)
+        return s
+
+    async def delegate(name: str, task: str, step_id: str | None = None) -> str:
+        target = find_agent(name)
         if not target:
             return f"No agent named {name!r}. Teammates: {', '.join(a['name'] for a in others)}."
+        step = step_for(target, task, step_id)
+        step["status"] = "running"
+        await emit_plan()
         # unique scope per hand-off, so parallel tasks to the same teammate stream separately
         scope_counts[target["name"]] = n = scope_counts.get(target["name"], 0) + 1
         label = target["name"] if n == 1 else f"{target['name']} #{n}"
         sub_scope = f"{scope}>{label}" if scope else label
-        await emit({**base, "type": "delegate", "to": target["name"], "task": task})
-        result = await run_agent(target, [{"role": "user", "content": task}], emit, budget,
-                                 depth=depth + 1, scope=sub_scope, gate=gate)
-        return result["output"]
+        await emit({**base, "type": "delegate", "to": target["name"], "task": task, "step": step["id"]})
+        try:
+            result = await run_agent(target, [{"role": "user", "content": task}], emit, budget,
+                                     depth=depth + 1, scope=sub_scope, gate=gate)
+        except Exception as e:
+            step.update(status="failed", result=str(e)[:300])
+            await emit_plan()
+            raise
+        out = result["output"] or ""
+        step.update(status="done" if out.strip() else "failed", result=out[:400])
+        await emit_plan()
+        return out
 
     # external MCP tool servers switched on for this agent
     mcp_schemas, mcp_routes, mcp_problems = await mcp_manager.agent_tool_schemas(agent.get("tools") or [])
@@ -159,7 +224,7 @@ async def run_agent(
             sid, tool_name, annotations = mcp_routes[name]
             policy = policies.get(policies.mcp_key(sid, tool_name), annotations)
         else:
-            policy = policies.get("delegate" if name == "delegate_parallel" else name)
+            policy = "allow" if name == "update_plan" else policies.get("delegate" if name == "delegate_parallel" else name)
         if policy == "block":
             output = "Blocked: the user's tool safety settings don't allow this tool. Continue without it."
             await emit({**base, "type": "tool_result", "tool": name, "call_id": call_id, "output": output, "duration": 0})
@@ -184,7 +249,7 @@ async def run_agent(
             output = (await mcp_manager.call(mcp_routes[name], parsed)) if isinstance(parsed, dict) \
                 else f"Invalid JSON arguments: {args[:200]}"
         else:
-            output = await tools.call_tool(name, args, delegate=delegate)
+            output = await tools.call_tool(name, args, delegate=delegate, plan=update_plan)
         await emit({**base, "type": "tool_result", "tool": name, "call_id": call_id,
                     "output": output, "duration": round(time.time() - started, 2)})
         return output
@@ -430,8 +495,12 @@ class WorkflowRun:
                 output = "\n\n".join(out for _, out in upstream) if upstream else run_input
                 self.set_node(nid, decision=target_label, reason=reason)
             else:
-                result = await run_agent(agent, [{"role": "user", "content": prompt}],
-                                         self._node_emit(nid), self.budget, gate=self.tool_gate(nid))
+                is_project = bool(self.run.get("project"))
+                msgs = [*(self.run.get("history") or []), {"role": "user", "content": run_input}] if is_project \
+                    else [{"role": "user", "content": prompt}]
+                result = await run_agent(agent, msgs,
+                                         self._node_emit(nid), self.budget, gate=self.tool_gate(nid),
+                                         project=self.run if is_project else None)
                 output = result["output"]
 
         self.outputs[nid] = output
@@ -698,12 +767,88 @@ class WorkflowRun:
                     fut.cancel()
             self.run["finished_at"] = time.time()
             self.save()
+            sync_project_status(self.run)
             hub.partial.pop(run_id, None)
             hub.tasks.pop(run_id, None)
             run_copy = dict(self.run)
             run_copy.pop("graph", None)
             await self.emit({"type": "run_finished", "run": run_copy})
 
+
+
+# =====================================================================
+# Projects: a task given to a lead agent (e.g. the Manager). Its plan is kept as a workflow.
+# =====================================================================
+
+def plan_to_graph(plan: list[dict], agents_by_name: dict[str, dict]) -> dict:
+    """Start -> plan steps (columns by dependency order) -> Output."""
+    by_id = {s["id"]: s for s in plan}
+    level: dict[str, int] = {}
+
+    def lvl(s: dict, seen: frozenset = frozenset()) -> int:
+        if s["id"] in level:
+            return level[s["id"]]
+        if s["id"] in seen:
+            return 1
+        deps = [by_id[a] for a in s["after"] if a in by_id]
+        level[s["id"]] = 1 + max((lvl(d, seen | {s["id"]}) for d in deps), default=0)
+        return level[s["id"]]
+
+    for s in plan:
+        lvl(s)
+    cols: dict[int, list[str]] = {}
+    for s in plan:
+        cols.setdefault(level[s["id"]], []).append(s["id"])
+    tallest = max((len(c) for c in cols.values()), default=1)
+    mid = (tallest - 1) / 2 * 150
+    nid = lambda sid: "step_" + re.sub(r"[^\w-]", "_", sid)  # noqa: E731
+    nodes = [{"id": "start", "type": "start", "position": {"x": 0, "y": mid}, "data": {}}]
+    for c, ids in cols.items():
+        for i, sid in enumerate(ids):
+            s = by_id[sid]
+            nodes.append({"id": nid(sid), "type": "agent",
+                          "position": {"x": c * 320, "y": (i - (len(ids) - 1) / 2) * 150 + mid},
+                          "data": {"agentId": (agents_by_name.get(s["agent"]) or {}).get("id"), "instructions": s["task"]}})
+    nodes.append({"id": "output", "type": "output", "position": {"x": (max(cols, default=0) + 1) * 320, "y": mid}, "data": {}})
+    has_child = {a for s in plan for a in s["after"]}
+    edges = [{"id": f"e_start_{nid(s['id'])}", "source": "start", "target": nid(s["id"])} for s in plan if not s["after"]]
+    edges += [{"id": f"e_{nid(a)}_{nid(s['id'])}", "source": nid(a), "target": nid(s["id"])} for s in plan for a in s["after"]]
+    edges += [{"id": f"e_{nid(s['id'])}_output", "source": nid(s["id"]), "target": "output"} for s in plan if s["id"] not in has_child]
+    return {"nodes": nodes, "edges": edges}
+
+
+def save_project_workflow(run: dict, lead: str, plan: list[dict]) -> str:
+    """Create or update the workflow that shows this project's plan. Returns its id."""
+    wf = db.get_doc("workflow", run.get("project_workflow_id") or "") or {}
+    agents_by_name = {a["name"]: a for a in db.list_docs("agent")}
+    wf.update({
+        "name": wf.get("name") or run.get("title") or "Project",
+        "description": wf.get("description") or f"Planned by {lead} from your task. Run it again or edit it like any workflow.",
+        "graph": plan_to_graph(plan, agents_by_name),
+        "plan": plan,
+        "project": {"run_id": run["id"], "chat_agent_id": run.get("chat_agent_id"), "lead": lead, "status": "running",
+                    "steps_done": sum(s["status"] == "done" for s in plan), "steps_total": len(plan)},
+    })
+    wf = db.save_doc("workflow", wf)
+    run["project_workflow_id"] = wf["id"]
+    return wf["id"]
+
+
+def sync_project_status(run: dict) -> None:
+    wf = db.get_doc("workflow", run.get("project_workflow_id") or "")
+    if wf and wf.get("project"):
+        wf["project"]["status"] = run.get("status", "done")
+        db.save_doc("workflow", wf)
+
+
+def sync_interrupted_projects() -> None:
+    """After a restart: projects whose run can't finish any more get the run's final status."""
+    for wf in db.list_docs("workflow"):
+        p = wf.get("project")
+        if p and p.get("status") == "running":
+            run = db.get_run(p.get("run_id") or "")
+            p["status"] = run["status"] if run and run["status"] not in ("running", "queued", "waiting") else "error"
+            db.save_doc("workflow", wf)
 
 def single_agent_graph(agent: dict) -> dict:
     return {
@@ -720,7 +865,7 @@ def single_agent_graph(agent: dict) -> dict:
 
 
 def start_run(*, input_text: str, graph: dict, workflow: dict | None = None, agent: dict | None = None,
-              autonomous: bool = False) -> dict:
+              autonomous: bool = False, project: bool = False, follow_up_of: dict | None = None) -> dict:
     run = {
         "id": db.new_id(),
         "title": (input_text.strip().splitlines() or ["(empty)"])[0][:100],
@@ -730,12 +875,20 @@ def start_run(*, input_text: str, graph: dict, workflow: dict | None = None, age
         "agent_id": agent["id"] if agent else None,
         "status": "queued",
         "autonomous": autonomous,
+        "project": project,
         "created_at": time.time(),
         "graph": graph,
         "node_states": {},
         "cost": 0.0,
         "tokens": {"input": 0, "output": 0},
     }
+    if follow_up_of:  # continue an earlier project: same workflow, the conversation so far, the plan so far
+        run["history"] = [*(follow_up_of.get("history") or []),
+                          {"role": "user", "content": follow_up_of["input"]},
+                          {"role": "assistant", "content": follow_up_of.get("output") or follow_up_of.get("error") or "(no answer)"}]
+        run["project_workflow_id"] = follow_up_of.get("project_workflow_id")
+        wf = db.get_doc("workflow", run["project_workflow_id"] or "")
+        run["plan_seed"] = [s for s in (wf or {}).get("plan", []) if s.get("status") in ("done", "failed")]
     db.save_run(run)
     hub.tasks[run["id"]] = asyncio.create_task(WorkflowRun(run).execute())
     return run

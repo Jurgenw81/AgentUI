@@ -259,7 +259,7 @@ function Editor() {
             onSelectionChange={({ nodes: sel }) => setSelectedId(sel[0]?.id ?? null)}
             onNodesDelete={() => setSelectedId(null)}
             fitView
-            fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
+            fitViewOptions={{ padding: "4%", maxZoom: 1 }}
             minZoom={0.15}
             defaultEdgeOptions={edgeDefaults}
             proOptions={{ hideAttribution: true }}

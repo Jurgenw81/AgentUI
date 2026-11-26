@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Copy, Play, Plus, Trash2, Workflow as WfIcon } from "lucide-react";
+import { Copy, Eye, Play, Plus, Trash2, Workflow as WfIcon } from "lucide-react";
 import { api, timeAgo, type Agent, type Workflow } from "../api";
-import { AgentAvatar, EmptyState, PageHeader, useToast } from "../components/ui";
+import { AgentAvatar, EmptyState, PageHeader, StatusBadge, useToast } from "../components/ui";
 import { RunDialog } from "../components/RunDialog";
 
 export default function WorkflowsPage() {
@@ -12,11 +12,19 @@ export default function WorkflowsPage() {
   const nav = useNavigate();
   const toast = useToast();
 
-  const load = () => api.workflows().then(setWfs);
+  // most recently edited first, so the one you are working on is at the top
+  const load = () => api.workflows().then((w) => setWfs([...w].sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))));
   useEffect(() => {
     load();
     api.agents().then((a) => setAgents(Object.fromEntries(a.map((x) => [x.id, x]))));
   }, []);
+  // while a project is being worked on, keep the list live
+  const working = wfs?.some((w) => w.project?.status === "running");
+  useEffect(() => {
+    if (!working) return;
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  }, [working]);
 
   const create = async () => {
     const wf = await api.createWorkflow({ name: "Untitled workflow" });
@@ -38,7 +46,13 @@ export default function WorkflowsPage() {
         {wfs?.map((w) => {
           const steps = w.graph.nodes.filter((n) => n.type === "agent" || n.type === "router");
           return (
-            <div key={w.id} className="card flex flex-col p-5">
+            <div key={w.id} className={`card flex flex-col p-5 ${w.project?.status === "running" ? "border-indigo-300 ring-2 ring-indigo-500/20 dark:border-indigo-700" : ""}`}>
+              {w.project && (
+                <div className="mb-2 flex items-center gap-2 text-xs text-zinc-500">
+                  <StatusBadge status={w.project.status} />
+                  <span>{w.project.steps_done}/{w.project.steps_total} steps · project by {w.project.lead}</span>
+                </div>
+              )}
               <Link to={`/workflows/${w.id}`} className="group">
                 <h3 className="font-semibold group-hover:text-indigo-600 dark:group-hover:text-indigo-400">{w.name}</h3>
                 <p className="mt-1 line-clamp-2 min-h-[2.5rem] text-sm text-zinc-500 dark:text-zinc-400">{w.description || "No description"}</p>
@@ -51,7 +65,8 @@ export default function WorkflowsPage() {
               </div>
               <div className="mt-4 flex gap-1.5 border-t border-zinc-100 pt-3 dark:border-zinc-800">
                 <Link to={`/workflows/${w.id}`} className="btn-secondary flex-1 px-2 py-1.5">Open editor</Link>
-                <button className="btn-primary flex-1 px-2 py-1.5" onClick={() => setRunTarget({ kind: "workflow", id: w.id, name: w.name })}><Play size={14} /> Run</button>
+                {w.project && <Link to={w.project.run_id ? `/runs/${w.project.run_id}` : `/chat/${w.project.chat_agent_id}`} className="btn-secondary flex-1 px-2 py-1.5"><Eye size={14} /> {w.project.status === "running" ? "Watch live" : "See result"}</Link>}
+                <button className="btn-primary flex-1 px-2 py-1.5" onClick={() => setRunTarget({ kind: "workflow", id: w.id, name: w.name })}><Play size={14} /> {w.project ? "Run again" : "Run"}</button>
                 <button className="btn-ghost px-2 py-1.5" title="Duplicate" onClick={async () => { await api.duplicateWorkflow(w.id); load(); }}><Copy size={14} /></button>
                 <button className="btn-ghost px-2 py-1.5 hover:text-red-600" title="Delete"
                   onClick={async () => { if (confirm(`Delete "${w.name}"?`)) { await api.deleteWorkflow(w.id); toast("Workflow deleted"); load(); } }}>

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -54,9 +55,41 @@ async def web_search(query: str, max_results: int = 6) -> str:
     return "\n\n".join(f"{i+1}. {r.get('title')}\n{r.get('href')}\n{r.get('body')}" for i, r in enumerate(results))
 
 
+_GH = re.compile(r"^https?://(?:www\.)?github\.com/([^/?#]+)/([^/?#]+?)(?:\.git)?(?:/(blob|tree)/([^/?#]+)(/[^?#]*)?)?/?(?:[?#].*)?$")
+
+
+async def _github(c: httpx.AsyncClient, url: str) -> str | None:
+    """Public GitHub repo/folder/file links -> clean text (raw file, or a file listing + README),
+    instead of the noisy HTML page. Returns None for other GitHub pages (issues, PRs...)."""
+    m = _GH.match(url)
+    if not m:
+        return None
+    owner, repo, kind, ref, path = m.groups()
+    path = (path or "").strip("/")
+    if kind == "blob":
+        r = await c.get(f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}")
+        return _clip(f"[{r.status_code}] {owner}/{repo}/{path} @ {ref}\n\n{r.text}")
+    api = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}" + (f"?ref={ref}" if ref else "")
+    r = await c.get(api, headers={"Accept": "application/vnd.github+json"})
+    if r.status_code != 200 or not isinstance(r.json(), list):
+        return None  # private, rate-limited, or not a folder: fall back to the normal page
+    items = sorted(r.json(), key=lambda i: (i.get("type") != "dir", i.get("name", "")))
+    lines = [f"{'📁' if i['type'] == 'dir' else '  '} {i['path']}{'/' if i['type'] == 'dir' else ''}" for i in items]
+    out = [f"GitHub {owner}/{repo}/{path} ({'ref ' + ref if ref else 'default branch'}) — {len(items)} entries:",
+           *lines,
+           f"\nTo read a file: fetch https://github.com/{owner}/{repo}/blob/{ref or 'HEAD'}/<path>"]
+    readme = next((i for i in items if i["type"] == "file" and i["name"].lower().startswith("readme")), None)
+    if readme and readme.get("download_url"):
+        rr = await c.get(readme["download_url"])
+        out.append(f"\n--- {readme['path']} ---\n{rr.text}")
+    return _clip("\n".join(out))
+
+
 async def fetch_url(url: str) -> str:
     async with httpx.AsyncClient(timeout=20, follow_redirects=True,
                                  headers={"User-Agent": "Mozilla/5.0 (AgentUI)"}) as c:
+        if (gh := await _github(c, url)) is not None:
+            return gh
         r = await c.get(url)
     ctype = r.headers.get("content-type", "")
     if "html" in ctype:
@@ -127,7 +160,7 @@ async def edit_file(path: str, old_text: str, new_text: str) -> str:
     if count > 1:
         return f"old_text appears {count} times. Include more surrounding text so it matches exactly once."
     updated = text.replace(old_text, new_text, 1)
-    p.write_text(updated)
+    _write(p, updated)
     msg = f"Edited {path}: replaced {len(old_text)} chars with {len(new_text)} chars."
     problem = check_file(path, updated)
     if problem:
@@ -166,10 +199,17 @@ def check_file(path: str, content: str) -> str | None:
     return None
 
 
+def _write(p: Path, content: str) -> None:
+    """Write via a temp file + rename, so files the sandbox created (owned by another user) can still be replaced."""
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f".{p.name}.agentui-tmp")
+    tmp.write_text(content)
+    os.replace(tmp, p)
+
+
 async def write_file(path: str, content: str) -> str:
     p = _safe_path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content)
+    _write(p, content)
     msg = f"Wrote {len(content)} chars to {path}"
     problem = check_file(path, content)
     if problem:
@@ -188,6 +228,8 @@ async def _docker(cmd: list[str], timeout: int = 60) -> str:
         return "Docker is not installed, so code cannot be run safely."
     full = [
         "docker", "run", "--rm", "-i", "--network", "none",
+        # run as you, so files the code creates belong to you (not root) and agents can edit them later
+        "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp",
         "--memory", "512m", "--cpus", "1", "--pids-limit", "128",
         "-v", f"{db.WORKSPACE_DIR.resolve()}:/workspace", "-w", "/workspace",
         SANDBOX_IMAGE, *cmd,
@@ -467,14 +509,32 @@ def tool_catalog() -> list[dict]:
 
 
 def delegate_schemas(agents: list[dict]) -> list[dict]:
-    """Two tools: hand off one task, or several tasks that run at the same time."""
+    """Delegation tools: lay out the plan (shown to the user as a live workflow), hand off one task,
+    or several tasks that run at the same time."""
     names = [a["name"] for a in agents]
     roster = "\n".join(f"- {a['name']}: {a.get('description', '')}" for a in agents)
     task_desc = "Complete, self-contained instructions. The teammate can't see your conversation or other tasks."
+    step_desc = "The id of the plan step this hand-off carries out (from update_plan), so the user's live workflow updates."
     return [
+        _fn("update_plan", "Lay out the workflow for this request: which teammate does which step, and in what order. "
+            "The user watches it as a live diagram, so call this FIRST, before any delegation, and call it again "
+            "whenever the plan changes (add, change or drop steps). Steps that already ran are kept. Each step is one "
+            "hand-off to one teammate. Afterwards, delegate every step and pass its id as `step`.\n"
+            f"Available teammates:\n{roster}",
+            {"steps": {"type": "array", "minItems": 1, "maxItems": 12, "items": {
+                "type": "object", "required": ["id", "agent", "task"],
+                "properties": {
+                    "id": {"type": "string", "description": "Short unique id, e.g. 'research'"},
+                    "agent": {"type": "string", "enum": names},
+                    "task": {"type": "string", "description": "What this step does, in one sentence"},
+                    "after": {"type": "array", "items": {"type": "string"},
+                              "description": "Ids of the steps that must finish before this one starts"},
+                }}}},
+            ["steps"]),
         _fn("delegate", "Hand ONE self-contained sub-task to a teammate agent and wait for its final answer.\n"
             f"Available teammates:\n{roster}",
-            {"agent": {"type": "string", "enum": names}, "task": {"type": "string", "description": task_desc}},
+            {"agent": {"type": "string", "enum": names}, "task": {"type": "string", "description": task_desc},
+             "step": {"type": "string", "description": step_desc}},
             ["agent", "task"]),
         _fn("delegate_parallel", "Hand SEVERAL independent sub-tasks to teammates at once. They work IN PARALLEL "
             "(much faster than one by one), and you get all their answers back together. Use this whenever "
@@ -482,28 +542,32 @@ def delegate_schemas(agents: list[dict]) -> list[dict]:
             f"Available teammates:\n{roster}",
             {"tasks": {"type": "array", "minItems": 1, "maxItems": 6, "items": {
                 "type": "object", "required": ["agent", "task"],
-                "properties": {"agent": {"type": "string", "enum": names}, "task": {"type": "string", "description": task_desc}},
+                "properties": {"agent": {"type": "string", "enum": names}, "task": {"type": "string", "description": task_desc},
+                               "step": {"type": "string", "description": step_desc}},
             }}},
             ["tasks"]),
     ]
 
 
 async def call_tool(name: str, args_json: str,
-                    delegate: Callable[[str, str], Awaitable[str]] | None = None) -> str:
+                    delegate: Callable[..., Awaitable[str]] | None = None,
+                    plan: Callable[[list], Awaitable[str]] | None = None) -> str:
     try:
         args = json.loads(args_json or "{}")
     except json.JSONDecodeError:
         return f"Invalid JSON arguments: {args_json[:200]}"
     try:
-        if name in ("delegate", "delegate_parallel") and not delegate:
+        if name in ("delegate", "delegate_parallel", "update_plan") and not delegate:
             return "Delegation is not available here."
+        if name == "update_plan":
+            return await plan(args.get("steps") or []) if plan else "Planning is not available here."
         if name == "delegate":
-            return await delegate(args.get("agent", ""), args.get("task", ""))
+            return await delegate(args.get("agent", ""), args.get("task", ""), args.get("step"))
         if name == "delegate_parallel":
             tasks = [t for t in (args.get("tasks") or []) if isinstance(t, dict)][:6]
             if not tasks:
                 return "Give at least one task as {agent, task}."
-            results = await asyncio.gather(*(delegate(t.get("agent", ""), t.get("task", "")) for t in tasks),
+            results = await asyncio.gather(*(delegate(t.get("agent", ""), t.get("task", ""), t.get("step")) for t in tasks),
                                            return_exceptions=True)
             parts = []
             for i, (t, r) in enumerate(zip(tasks, results), 1):

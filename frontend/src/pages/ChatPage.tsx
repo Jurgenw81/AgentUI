@@ -6,6 +6,8 @@ import { ActivityList, buildItems, type Partial_ } from "../components/Activity"
 import { AgentAvatar, EmptyState, Markdown } from "../components/ui";
 import { ProviderDot, useDefaultModel } from "../components/ModelPicker";
 import { ToolApprovalPanel } from "./RunView";
+import LeadChat from "./LeadChat";
+import { latestPlan, PlanBoard } from "../components/PlanBoard";
 
 type Msg = { role: "user" | "assistant"; content: string; events?: RunEvent[]; error?: string; cost?: number };
 
@@ -54,6 +56,7 @@ export default function ChatPage() {
     setBusy(false);
   };
 
+  const isLead = !!agent?.tools.includes("delegate");
   const send = () => {
     const text = input.trim();
     if (!text || busy || !agent) return;
@@ -110,6 +113,9 @@ export default function ChatPage() {
         ))}
       </aside>
 
+      {agent && isLead ? (
+        <LeadChat key={agent.id} agent={agent} agents={agents} defaultModel={defaultModel} modelText={modelOf(agent)} />
+      ) : (
       <div className="flex min-w-0 flex-1 flex-col">
         {agent && (
           <div className="flex items-center gap-3 border-b border-zinc-200 bg-white px-5 py-3 dark:border-zinc-800 dark:bg-zinc-900">
@@ -129,16 +135,20 @@ export default function ChatPage() {
               <div className="py-16 text-center">
                 <div className="mx-auto w-fit"><AgentAvatar agent={agent} size={56} /></div>
                 <h2 className="mt-4 text-lg font-semibold">Chat with {agent.name}</h2>
-                <p className="mx-auto mt-1 max-w-md text-sm text-zinc-500">{agent.description || "Ask anything."} Use chat to test an agent before you put it in a workflow.</p>
+                <p className="mx-auto mt-1 max-w-md text-sm text-zinc-500">{agent.description || "Ask anything."} {isLead
+                  ? `Give ${agent.name} a task and it becomes a project: ${agent.name} plans it, hands the parts to the team, and you watch it live. It keeps running in the background and shows up under Workflows and Runs.`
+                  : "Use chat to test an agent before you put it in a workflow."}</p>
               </div>
             )}
             {msgs.map((m, i) => (
-              <MessageView key={i} m={m} agent={agent} />
+              <MessageView key={i} m={m} agent={agent} agents={agents} defaultModel={defaultModel}
+                request={msgs.slice(0, i).reverse().find((x) => x.role === "user")?.content} />
             ))}
             {busy && (
               <div className="flex gap-3">
                 <AgentAvatar agent={agent} size={30} />
                 <div className="min-w-0 flex-1 pt-1">
+                  {(() => { const plan = latestPlan(liveEvents); return plan && <div className="sticky top-2 z-10 mb-3 rounded-xl bg-white shadow-lg dark:bg-zinc-900"><PlanBoard plan={plan} agents={agents} live defaultModel={defaultModel} /></div>; })()}
                   <ActivityList items={buildItems(liveEvents, Object.values(partials))} showAgent={false} />
                   {(() => {
                     const done = new Set(liveEvents.filter((e) => e.type === "tool_approval_resolved").map((e) => e.request_id));
@@ -161,7 +171,7 @@ export default function ChatPage() {
             <textarea
               rows={1}
               className="max-h-48 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none"
-              placeholder={`Message ${agent?.name ?? ""}…  (Enter to send, Shift+Enter for new line)`}
+              placeholder={isLead ? `Describe the task for ${agent?.name} and its team…  (Enter to start)` : `Message ${agent?.name ?? ""}…  (Enter to send, Shift+Enter for new line)`}
               value={input}
               onChange={(e) => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = `${e.target.scrollHeight}px`; }}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
@@ -174,11 +184,12 @@ export default function ChatPage() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
 
-function MessageView({ m, agent }: { m: Msg; agent?: Agent }) {
+function MessageView({ m, agent, agents, defaultModel, request }: { m: Msg; agent?: Agent; agents: Agent[]; defaultModel?: string; request?: string }) {
   if (m.role === "user")
     return (
       <div className="flex justify-end">
@@ -186,10 +197,12 @@ function MessageView({ m, agent }: { m: Msg; agent?: Agent }) {
       </div>
     );
   const items = buildItems(m.events ?? [], []);
+  const plan = latestPlan(m.events ?? []);
   return (
     <div className="flex gap-3">
       <AgentAvatar agent={agent} size={30} />
       <div className="min-w-0 flex-1 space-y-2 pt-1">
+        {plan && <PlanBoard plan={plan} agents={agents} live={false} defaultModel={defaultModel} request={request} />}
         {items.length > 0 && <ActivityList items={items} showAgent={false} />}
         {m.content && <Markdown>{m.content}</Markdown>}
         {m.error && <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{m.error}</div>}

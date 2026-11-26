@@ -29,7 +29,8 @@ export type GraphNode = { id: string; type: NodeType; position: { x: number; y: 
 export type GraphEdge = { id: string; source: string; target: string };
 export type Graph = { nodes: GraphNode[]; edges: GraphEdge[] };
 
-export type Workflow = { id: string; name: string; description?: string; graph: Graph; updated_at?: number; autonomous?: boolean };
+export type Project = { run_id: string | null; chat_agent_id?: string | null; lead: string; status: string; steps_done: number; steps_total: number };
+export type Workflow = { id: string; name: string; description?: string; graph: Graph; updated_at?: number; autonomous?: boolean; project?: Project };
 
 export type NodeState = {
   status: "pending" | "running" | "waiting" | "done" | "skipped" | "error" | "stopped";
@@ -59,6 +60,9 @@ export type Run = {
   workflow_name?: string | null;
   agent_id?: string | null;
   autonomous?: boolean;
+  project?: boolean; // a task given to a lead agent; its plan is kept as a workflow
+  project_workflow_id?: string;
+  history?: { role: "user" | "assistant"; content: string }[]; // earlier messages in this project
   created_at: number;
   finished_at?: number;
   cost: number;
@@ -182,7 +186,7 @@ export const api = {
 
   runs: () => request<Run[]>("GET", "/api/runs"),
   run: (id: string) => request<{ run: Run; events: RunEvent[] }>("GET", `/api/runs/${id}`),
-  startRun: (body: { workflow_id?: string; agent_id?: string; input: string; graph?: Graph; autonomous?: boolean }) =>
+  startRun: (body: { workflow_id?: string; agent_id?: string; input: string; graph?: Graph; autonomous?: boolean; continue_run?: string }) =>
     request<Run>("POST", "/api/runs", body),
   stopRun: (id: string) => request("POST", `/api/runs/${id}/stop`),
   deleteRun: (id: string) => request("DELETE", `/api/runs/${id}`),

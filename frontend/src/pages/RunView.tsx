@@ -5,6 +5,7 @@ import { ArrowLeft, Bot, Check, ChevronDown, Clock, Coins, Copy, Hand, Hash, Pen
 import { api, fmtCost, fmtTokens, wsUrl, type Agent, type Run, type RunEvent } from "../api";
 import { nodeTypes, type FlowNode } from "../components/FlowNodes";
 import { ActivityList, buildItems, prettyTool, type Partial_ } from "../components/Activity";
+import { latestPlan, PlanBoard, PlanCanvas } from "../components/PlanBoard";
 import { Markdown, Spinner, StatusBadge, useToast } from "../components/ui";
 import { edgeDefaults } from "./WorkflowEditor";
 import { useDefaultModel } from "../components/ModelPicker";
@@ -178,6 +179,7 @@ function RunInner() {
           <div className="truncate font-semibold">{run.title}</div>
           <div className="text-xs text-zinc-500">
             {run.workflow_id ? <Link className="hover:underline" to={`/workflows/${run.workflow_id}`}>{run.workflow_name}</Link> : run.workflow_name}
+            {run.project_workflow_id && <>{" · "}<Link className="text-indigo-600 hover:underline dark:text-indigo-400" to={`/workflows/${run.project_workflow_id}`}>Open in Workflows</Link></>}
             {" · "}{new Date(run.created_at * 1000).toLocaleString()}
           </div>
         </div>
@@ -201,8 +203,12 @@ function RunInner() {
 
       <div className="flex min-h-0 flex-1">
         <div className="relative hidden min-w-0 flex-1 lg:block">
-          {flowNodes.length > 0 && <ReactFlow
-            nodes={flowNodes} onNodesChange={onNodesChange} edges={flow.edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.15, maxZoom: 1 }} minZoom={0.15}
+          {run.project && latestPlan(events) ? (
+            <PlanCanvas plan={latestPlan(events)!} agents={Object.values(agents)} live={live} defaultModel={defaultModel} />
+          ) : run.project && live ? (
+            <div className="flex h-full items-center justify-center gap-2 text-sm text-zinc-500"><Spinner /> The lead agent is planning the work…</div>
+          ) : flowNodes.length > 0 && <ReactFlow
+            nodes={flowNodes} onNodesChange={onNodesChange} edges={flow.edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: "4%", maxZoom: 1 }} minZoom={0.15}
             nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} proOptions={{ hideAttribution: true }}
             onNodeClick={(_, n) => { setOpen((o) => ({ ...o, [n.id]: true })); sectionRefs.current[n.id]?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
           >
@@ -213,7 +219,8 @@ function RunInner() {
 
         <div ref={scroller} className="w-full overflow-y-auto border-l border-zinc-200 bg-white px-5 py-5 dark:border-zinc-800 dark:bg-zinc-900 lg:w-[46%] lg:max-w-[720px]">
           <section className="mb-5">
-            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-500">Task</div>
+            {!!run.history?.length && <EarlierInProject history={run.history} />}
+            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-500">{run.history?.length ? "Your follow-up" : "Task"}</div>
             <div className="whitespace-pre-wrap rounded-lg bg-zinc-50 px-3 py-2 text-sm dark:bg-zinc-800/60">{run.input}</div>
           </section>
 
@@ -255,6 +262,7 @@ function RunInner() {
                   </button>
                   {isOpen(nid) && (
                     <div className="border-t border-zinc-100 px-3.5 py-3 dark:border-zinc-800">
+                      {(() => { const plan = latestPlan(events, nid); return plan && <div className={`mb-3 ${run.project ? "lg:hidden" : ""}`}><PlanBoard plan={plan} agents={Object.values(agents)} live={st.status === "running"} defaultModel={defaultModel} request={run.input} /></div>; })()}
                       {items.length ? <ActivityList items={items} showAgent={node?.type === "loop"} /> : node?.type !== "approval" && <div className="flex items-center gap-2 text-sm text-zinc-500"><Spinner /> Thinking…</div>}
                       {pendingToolApprovals(events, nid).map((ev) => (
                         <ToolApprovalPanel key={ev.request_id as string} onDecide={(approved, note) => api.decideApproval(run.id, ev.request_id as string, { approved, note })}
@@ -282,6 +290,7 @@ function RunInner() {
               </div>
             </section>
           )}
+          {run.project && run.agent_id && !live && <FollowUp run={run} leadName={agents[run.agent_id]?.name ?? "the lead"} />}
         </div>
       </div>
     </div>
@@ -382,5 +391,59 @@ export function ToolApprovalPanel({ tool, args, agent, concerns, onDecide }: {
       </div>
       <p className="text-[11px] text-zinc-500">Declining doesn't stop the run: the agent is told and continues without this action.</p>
     </div>
+  );
+}
+
+/** Earlier requests and answers in this project (follow-ups continue the same project). */
+function EarlierInProject({ history }: { history: { role: string; content: string }[] }) {
+  const [open, setOpen] = useState(false);
+  const turns = history.filter((m) => m.role === "user").length;
+  return (
+    <div className="mb-4">
+      <button className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-zinc-500" onClick={() => setOpen(!open)}>
+        Earlier in this project ({turns}) <ChevronDown size={13} className={`transition ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700">
+          {history.map((m, i) => (
+            <div key={i} className={`text-sm ${m.role === "user" ? "font-medium" : "text-zinc-500"}`}>
+              {m.role === "user" ? "You: " : ""}<span className="line-clamp-4 whitespace-pre-wrap">{m.content}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Ask the lead to change something or keep going. It continues this project (same workflow, same conversation). */
+function FollowUp({ run, leadName }: { run: Run; leadName: string }) {
+  const nav = useNavigate();
+  const toast = useToast();
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const send = async () => {
+    if (!text.trim()) return;
+    setBusy(true);
+    try {
+      const r = await api.startRun({ agent_id: run.agent_id!, input: text.trim(), continue_run: run.id });
+      localStorage.setItem(`agentui.project.${run.agent_id}`, r.id);
+      nav(`/runs/${r.id}`);
+    } catch (e) {
+      toast((e as Error).message, "error");
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="mt-6">
+      <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-500">Continue this project</div>
+      <div className="flex items-end gap-2 rounded-xl border border-zinc-300 p-2 focus-within:border-indigo-500 dark:border-zinc-700">
+        <textarea rows={2} className="flex-1 resize-none bg-transparent px-2 py-1 text-sm outline-none"
+          placeholder={`Tell ${leadName} what to change or do next…  (Enter to send)`}
+          value={text} onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
+        <button className="btn-primary px-3 py-1.5" disabled={!text.trim() || busy} onClick={send}>Send</button>
+      </div>
+    </section>
   );
 }

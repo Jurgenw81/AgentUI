@@ -21,6 +21,7 @@ FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.mark_interrupted_runs()
+    engine.sync_interrupted_projects()
     seed.seed()
     seed.seed_v2()
     seed.seed_v3()
@@ -193,7 +194,11 @@ async def create_run(body: dict = Body(...)):
         raise HTTPException(400, "Describe the task first.")
     if body.get("agent_id"):
         agent = db.get_doc("agent", body["agent_id"]) or _404("Agent")
-        return engine.start_run(input_text=text, graph=engine.single_agent_graph(agent), agent=agent)
+        # a lead agent (one that can delegate) gets a project: it runs in the background and its plan is kept as a workflow
+        project = "delegate" in (agent.get("tools") or [])
+        prev = db.get_run(body["continue_run"]) if project and body.get("continue_run") else None
+        return engine.start_run(input_text=text, graph=engine.single_agent_graph(agent), agent=agent, follow_up_of=prev,
+                                project=project, autonomous=bool(db.get_setting("autonomous_default", False)))
     wf = db.get_doc("workflow", body.get("workflow_id", "")) or _404("Workflow")
     graph = body.get("graph") or wf["graph"]
     if err := engine.validate_graph(graph):
@@ -325,15 +330,29 @@ async def ws_chat(ws: WebSocket):
                         "approved": d["approved"], "by": "you", "note": d.get("note", "")})
             return d["approved"], d.get("note", "")
 
+        # a lead agent's task is a project even when it arrives through chat: its plan shows up under Workflows
+        project = None
+        if "delegate" in (agent.get("tools") or []):
+            project = {"id": None, "title": (last_user.strip().splitlines() or ["Project"])[0][:100],
+                       "chat_agent_id": agent["id"], "status": "running"}
         try:
-            result = await engine.run_agent(agent, msg.get("messages", []), emit, budget, gate=gate)
+            result = await engine.run_agent(agent, msg.get("messages", []), emit, budget, gate=gate, project=project)
+            if project:
+                project["status"] = "done"
             await ws.send_json({"type": "done", "output": result["output"],
                                 "cost": budget.cost, "tokens": {"input": budget.tokens_in, "output": budget.tokens_out}})
         except asyncio.CancelledError:
+            if project:
+                project["status"] = "stopped"
             await ws.send_json({"type": "stopped"})
             raise
         except Exception as e:  # noqa: BLE001
+            if project:
+                project["status"] = "error"
             await ws.send_json({"type": "error", "error": f"{type(e).__name__}: {e}"})
+        finally:
+            if project:
+                engine.sync_project_status(project)
 
     try:
         while True:

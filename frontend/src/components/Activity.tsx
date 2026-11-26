@@ -19,7 +19,7 @@ export type Item =
 
 const TOOL_NAMES: Record<string, string> = {
   web_search: "Searched the web", fetch_url: "Read a web page", http_request: "Called an API", list_files: "Listed files",
-  read_file: "Read a file", write_file: "Wrote a file", run_python: "Ran Python", run_shell: "Ran a shell command", delegate: "Asked a teammate", delegate_parallel: "Asked teammates (in parallel)", check_website: "Checked the website", codex_shell: "Codex looked around (read-only)",
+  read_file: "Read a file", write_file: "Wrote a file", run_python: "Ran Python", run_shell: "Ran a shell command", delegate: "Asked a teammate", update_plan: "Updated the workflow plan", delegate_parallel: "Asked teammates (in parallel)", check_website: "Checked the website", codex_shell: "Codex looked around (read-only)",
 };
 
 export function buildItems(events: RunEvent[], partials: Partial_[], node?: string): Item[] {
