@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -9,8 +10,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-DATA_DIR.mkdir(exist_ok=True)
+# AGENTUI_DATA_DIR lets you keep separate setups (e.g. a demo or a test copy)
+DATA_DIR = Path(os.environ.get("AGENTUI_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 WORKSPACE_DIR = DATA_DIR / "workspace"
 WORKSPACE_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "agentui.db"

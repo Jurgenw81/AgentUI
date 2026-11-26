@@ -1,6 +1,6 @@
 # AgentUI
 
-**A local web app for building a team of AI agents and orchestrating them.** Give each agent a role, a model and tools. Then connect them on a visual canvas, or hand a big task to a lead agent that splits it up and delegates the parts. You can watch every step live.
+**A local web app for building a team of AI agents and orchestrating them.** Give each agent a role, a model and tools. Then connect them on a visual canvas, or just **tell the Manager what you want**: it plans the work as a workflow, hands the parts to the team, and you watch the plan fill in live while you keep talking to it.
 
 It works with your **Claude, ChatGPT and Gemini subscriptions** (no API key needed), **free local models via Ollama**, and **any API-key provider**. You can mix all of these in a single workflow.
 
@@ -12,6 +12,7 @@ It works with your **Claude, ChatGPT and Gemini subscriptions** (no API key need
 
 - [Highlights](#highlights)
 - [Quick start](#quick-start)
+- [Projects: give the Manager a task](#projects-give-the-manager-a-task)
 - [Connecting models](#connecting-models)
 - [Core concepts](#core-concepts)
 - [Autonomy and safety](#autonomy-and-safety)
@@ -30,11 +31,12 @@ It works with your **Claude, ChatGPT and Gemini subscriptions** (no API key need
 
 | | |
 |---|---|
+| 🧭 **Projects with a lead agent** | Tell the **Manager** what you want. It lays out a plan (who does what, in which order, what runs in parallel), shows it as a **live workflow**, delegates every step and reports back. It keeps running in the background, shows up under **Workflows**, and you can **keep the conversation going** to change or extend the result. |
 | 🧑‍🤝‍🧑 **Agents** | Each agent has a role, a model, tools, a creativity setting and a step limit. Lead agents can hand work to a chosen **team**, including **several tasks at once that run in parallel**. |
 | 🔀 **Visual workflows** | Drag agents onto a canvas and connect them. Steps fed by the same step run **in parallel**, and a step with several inputs **waits for all of them**. A **Router** sends work down one branch, a **Review loop** repeats until a reviewer approves, and **Your approval** pauses the run for you. |
 | 🔑 **Subscriptions, local or API** | Claude Pro/Max (via Claude Code), ChatGPT Plus/Pro (via Codex CLI), Gemini (via Gemini CLI), Ollama, Anthropic, OpenAI, Gemini API, OpenRouter, and any OpenAI-compatible server. |
 | 📺 **Live runs** | Text streams in as it's written. You see every tool call, every hand-off between agents, review rounds, approvals, tokens and cost, and the canvas lights up as steps run. You can stop a run at any time. |
-| 🛠️ **Tools** | Web search, reading web pages, HTTP APIs, files (read, write, edit, with syntax checks on save), a website QA checker, and Python and shell code in a **Docker sandbox**. |
+| 🛠️ **Tools** | Web search, reading web pages and **public GitHub repos**, HTTP APIs, files (read, write, edit, with syntax checks on save), a website QA checker, and Python and shell code in a **Docker sandbox**. |
 | 🔌 **MCP tool servers** | Connect GitHub, Slack, email, databases, browsers and thousands more. Search the **official MCP registry** from the app. Servers that need an account get a **one-click login (OAuth)**. |
 | 🛡️ **Safety** | Every tool has a rule: **Allow / AI check / Ask me / Block**. Approval steps have three modes. There's an **Autonomous** switch, a cost limit, timeouts, and sandboxed website previews. |
 | 🌐 **Website preview** | Agents build sites in the shared workspace, and you preview them on desktop, tablet and phone sizes, safely sandboxed. |
@@ -49,7 +51,7 @@ It works with your **Claude, ChatGPT and Gemini subscriptions** (no API key need
 <td><img src="docs/screenshots/website-preview.png" alt="Website preview"><br><sub><b>Website preview</b> of a site the agents built in about 2 minutes</sub></td>
 </tr>
 <tr>
-<td><img src="docs/screenshots/home.png" alt="Home"><br><sub><b>Home:</b> getting started, quick runs, recent runs</sub></td>
+<td><img src="docs/screenshots/home.png" alt="Home"><br><sub><b>Home:</b> start a project and see what's happening now</sub></td>
 <td><img src="docs/screenshots/dark-workflow.png" alt="Dark mode"><br><sub><b>Dark mode</b></sub></td>
 </tr>
 </table>
@@ -72,13 +74,36 @@ Then:
 
 1. **Settings:** connect at least one model source (see below).
 2. **Agents:** pick a model for each agent, or set one **default model** for all of them.
-3. **Workflows:** open a template and click **Run**. You can also chat with a single agent under **Chat**.
+3. **Home → Start a project** (or **Chat → Manager**): describe what you want and watch the team work. You can also build your own workflow under **Workflows**, or chat with a single agent under **Chat**.
 
 ### Development mode
 
 ```bash
 ./dev.sh   # backend with auto-reload on :8000, UI with hot reload on :3000
 ```
+
+---
+
+## Projects: give the Manager a task
+
+The quickest way to use AgentUI is to talk to the **Manager**, either in **Chat → Manager** or with **Start a project** on the Home page. You describe the job; the Manager coordinates and never does the work itself.
+
+![The Manager's live plan: three Researchers working in parallel, then a Writer and a Reviewer](docs/screenshots/manager-live-plan.png)
+
+1. **It plans first.** The Manager splits the request into steps, picks a teammate for each (by their descriptions) and decides what can run in parallel. The plan appears as a **live workflow** at the top of the conversation.
+2. **The team works.** Every step goes *waiting → running → done* on the diagram, and each hand-off, web search, file write and answer shows up below it. Anything that needs the internet or GitHub goes to the Researcher, files go to the Coder, writing goes to the Writer.
+3. **It reports back** with the combined result and one line on who did what. If its plan changes on the way, the diagram updates.
+4. **Keep talking.** Replies like *"find 3 more"* or *"turn it into a table"* continue the **same project**: the Manager gets the conversation so far, the earlier steps stay on the diagram, and it builds on the earlier work instead of starting over. **New project** starts fresh.
+
+![A follow-up in the same conversation: the earlier request and the new answer](docs/screenshots/manager-follow-up.png)
+
+**It runs in the background.** Projects run on the server, so you can leave the page, look at other things, or close the tab. Come back to the chat and the whole conversation is there, including work that finished while you were away.
+
+**It shows up under Workflows.** Every project is saved as a workflow named after your task, with a live status ("Running · 2/5 steps", then "Done"), a **Watch live** button, and **Run again**. You can open it in the editor and change it like any other workflow. The Home page lists everything that's running under **Happening now**.
+
+![Workflows: a project being worked on, at the top of the list](docs/screenshots/workflows-projects.png)
+
+> **Lead agents** are agents with the *Ask another agent* tool, like **Manager** and **Web Lead**. Give one a **Team** (in its settings) to control which agents it may use. Lead agents get a planning tool (`update_plan`) automatically.
 
 ---
 
@@ -128,7 +153,7 @@ Rules: a step that feeds several steps runs them **in parallel**, and a step wit
 
 ### Runs and chat
 
-Every workflow run is saved, with a live canvas, a timeline for each step, the final result, tokens and cost. You can stop or re-run any of them. **Chat** lets you talk to a single agent, which is handy for testing an agent before putting it in a workflow.
+Every workflow run is saved, with a live canvas, a timeline for each step, the final result, tokens and cost. You can stop or re-run any of them. **Chat** lets you talk to a single agent, which is handy for testing an agent before putting it in a workflow. Chatting with a **lead agent** (like the Manager) starts a [project](#projects-give-the-manager-a-task) instead.
 
 ---
 
@@ -215,6 +240,7 @@ flowchart LR
 
 - **The engine** runs the workflow graph. A step starts when all of its inputs are finished or skipped. Routers mark the branches they didn't choose as skipped, review loops and approvals run inside their own step, and errors stop the run.
 - **The agent loop** streams model output, runs tool calls (concurrently when there are several), applies the tool safety rules, and repeats until the model gives a final answer or reaches its step limit.
+- **Projects:** a task for a lead agent runs as a background run. The lead's `update_plan` calls and every hand-off update the plan, which is streamed to the UI and saved as a workflow. A follow-up starts a new run with the conversation so far and the earlier plan.
 - **Subscription models** run the vendor's CLI headless. The agent's tools are offered to the CLI through `mcp_bridge.py`, which calls back into the engine, so policies, approvals and the live timeline all still apply.
 - **Live events** are stored in SQLite and streamed to the UI over WebSockets. A run you open midway shows its full history so far.
 
@@ -236,12 +262,14 @@ backend/app/
   seed.py          starter agents and workflows
 backend/examples/  full-system-test builder and test MCP servers
 frontend/src/
-  pages/           Home, Agents, Workflows, WorkflowEditor, RunView, Chat, Runs, Files, Settings
-  components/      canvas nodes, activity timeline, model picker, MCP settings, UI kit
+  pages/           Home, Agents, Workflows, WorkflowEditor, RunView, Chat, LeadChat (Manager conversations),
+                   Runs, Files, Settings
+  components/      canvas nodes, live plan diagram (PlanBoard), activity timeline, model picker,
+                   MCP settings, UI kit
 docs/screenshots/  images used in this README
 ```
 
-All data (agents, workflows, runs, settings, API keys, OAuth tokens) lives in `backend/data/` on your machine. To reset everything, stop the server and delete that folder.
+All data (agents, workflows, projects, runs, settings, API keys, OAuth tokens, and the agents' workspace) lives in `backend/data/` on your machine. To reset everything, stop the server and delete that folder. To keep a separate setup, for example a demo, point `AGENTUI_DATA_DIR` at another folder: `AGENTUI_DATA_DIR=~/agentui-demo ./start.sh`.
 
 ---
 
@@ -252,7 +280,7 @@ AgentUI is a **single-user app for your own computer**:
 - The server listens on `127.0.0.1` only, and has **no login**, so don't expose it to a network.
 - Requests that change things, and WebSocket connections, are only accepted from AgentUI's own pages. Other websites you have open can't use the API.
 - Website previews are served with a CSP `sandbox` header. Agent-written JavaScript runs on its own isolated origin, even when opened in a new tab, and can't read or change anything in AgentUI.
-- File tools can't leave the workspace folder. Code runs only in the Docker sandbox, which has no network access.
+- File tools can't leave the workspace folder. Code runs only in the Docker sandbox, which has no network access, and runs as your user, so the files it creates stay yours.
 - Local MCP servers run with **your** user's permissions, so only add ones you trust.
 - API keys and OAuth tokens are stored unencrypted in the local SQLite database.
 
@@ -268,6 +296,8 @@ AgentUI is a **single-user app for your own computer**:
 | A local model writes broken files | AgentUI syntax-checks files on save and tells the agent to fix them. Still, use a stronger or coding model (e.g. `qwen2.5-coder`) for coding agents. |
 | Web search returns nothing | The free search engines sometimes block automated queries. AgentUI tries several in turn; try again later or rephrase. |
 | An MCP server **can't connect** | Check that its command is installed (`npx`, `uvx`, `docker`), that required environment variables or headers are filled in, or click **Log in** if shown. |
+| The Manager's chat or projects look like an older version | After updating, restart the server and reload the page with **Ctrl+Shift+R**: an open tab keeps the old page until it's reloaded. |
+| A project stopped with *"Server restarted"* | Projects run inside the server, so stopping the server stops them. Open the project and send a follow-up such as *"continue"*. |
 | *"Port 3000 is already in use"* | AgentUI is probably already running. Open it, or run `PORT=4000 ./start.sh`. |
 
 ---
